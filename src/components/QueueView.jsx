@@ -3,8 +3,14 @@ import { ACUITY_META, SAFE_WAIT_MINUTES, formatMins } from "./ui";
 
 // Each queue item: { result, waitMins }
 export default function QueueView({ queue, surge, onSurgeToggle, onReassess }) {
+    // Compute live wait time (minutes) from each patient's arrival timestamp
+  const withWaits = queue.map((item) => ({
+    ...item,
+    waitMins: Math.floor((Date.now() - item.arrivedAt) / 60000),
+  }));
+
   // Sort by acuity (asc = most critical first), then by wait time (desc)
-  const sorted = [...queue].sort((a, b) => {
+  const sorted = [...withWaits].sort((a, b) => {
     if (a.result.acuity !== b.result.acuity) return a.result.acuity - b.result.acuity;
     return b.waitMins - a.waitMins;
   });

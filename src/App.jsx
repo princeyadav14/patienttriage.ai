@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { triage } from "./engine/triageEngine";
 import { patients as samplePatients } from "./data/patients";
 import IntakeForm from "./components/IntakeForm";
@@ -14,11 +14,22 @@ export default function App() {
   const [showOverride, setShowOverride] = useState(false);
 
   const [queue, setQueue] = useState([]); // { result, waitMins }
+    const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 10000); // refresh every 10s
+    return () => clearInterval(id);
+  }, []);
   const [log, setLog] = useState([]);
   const [surge, setSurge] = useState(false);
 
-  function now() {
-    return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    function now() {
+    return new Date().toLocaleString([], {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 
   function handleAssess(patient) {
@@ -27,11 +38,10 @@ export default function App() {
     setResult(r);
   }
 
-  function addToQueue(r, waitMins = 0) {
+    function addToQueue(r) {
     setQueue((q) => {
-      // avoid duplicate ids
       if (q.some((x) => x.result.patientId === r.patientId)) return q;
-      return [...q, { result: r, waitMins }];
+      return [...q, { result: r, arrivedAt: Date.now() }];
     });
   }
 
@@ -90,10 +100,10 @@ export default function App() {
       for (const p of samplePatients) {
         const r = triage(p);
         // give a distinct id per copy so the queue is 3x
-        const cloned = { ...r, patientId: `${r.patientId}-${copy + 1}` };
-        // random-ish wait times to show threshold coloring
-        const waitMins = Math.floor(Math.random() * 90);
-        surgeQueue.push({ result: cloned, waitMins });
+                const cloned = { ...r, patientId: `${r.patientId}-${copy + 1}` };
+        // stagger arrival times into the past so wait times vary and climb
+        const minsAgo = Math.floor(Math.random() * 90);
+        surgeQueue.push({ result: cloned, arrivedAt: Date.now() - minsAgo * 60000 });
       }
     }
     setQueue(surgeQueue);

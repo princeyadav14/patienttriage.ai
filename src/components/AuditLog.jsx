@@ -52,7 +52,7 @@ export default function AuditLog({ log, compact = false }) {
               {f.l} · {counts[f.k] ?? 0}
             </button>
           ))}
-          <span className="sortnote">newest first · immutable</span>
+          
         </div>
       )}
 
@@ -69,7 +69,9 @@ export default function AuditLog({ log, compact = false }) {
                 </span>
               </span>
             )}
-            <span className="log-time">{clockLabel(e.atMin)}</span>
+            <span className="log-time">
+              {new Date().toLocaleDateString([], { day: "2-digit", month: "short" })} · {clockLabel(e.atMin)}
+            </span>
           </div>
 
           {e.system ? (
@@ -125,16 +127,7 @@ export default function AuditLog({ log, compact = false }) {
                 </div>
               </div>
 
-              <div className="log-cell">
-                <div className="k">Governance</div>
-                <div className="v">
-                  Autonomy L{e.governance.autonomyLevel}
-                  <br />
-                  <span className="data">{e.governance.siteId}</span>
-                  <br />
-                  <span style={{ color: "var(--ink-3)" }}>{e.governance.jurisdiction}</span>
-                </div>
-              </div>
+      
             </div>
           ) : (
             <div className="log-grid">

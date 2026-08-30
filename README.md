@@ -1,152 +1,263 @@
-# PatientTriage.ai — Prototype
+# PatientTriage.ai
 
-An AI triage decision-support web app. Two-layer engine (deterministic red-flag
-rules + a transparent weighted scoring layer), age-banded thresholds, explicit
-confidence, bias-to-escalation under uncertainty, a live waiting-room monitor
-with safe-wait thresholds, a 3× surge simulation, and clinician override with a
-full audit log.
+An AI decision-support prototype for emergency department (ED) triage. It helps
+a triage nurse assign an acuity level (ESI 1 to 5) to arriving patients, monitors
+the waiting room for patients who need re-checking, and keeps a full audit trail
+of every decision. It is designed to support clinical judgement, never to replace
+it: a licensed clinician commits every decision.
 
-Team NodeBuild · Accenture Innovation Challenge 2026
-
----
-
-## What you need installed (one-time)
-
-You only need **Node.js** (version 18 or newer). That's it.
-
-- Check if you have it: open a terminal and run `node -v`
-  - If it prints something like `v20.x.x`, you're set.
-  - If it says "command not found", install Node from https://nodejs.org
-    (download the "LTS" version, run the installer, restart your terminal).
-
-npm (the package manager) comes bundled with Node, so you don't install it
-separately.
+This is a working proof-of-concept built with React. It runs entirely in the
+browser on synthetic patient data. It is not a medical device and is not for
+clinical use.
 
 ---
 
-## How to run it (3 steps)
+## Table of contents
 
-Open a terminal, then:
+1. [What it does](#what-it-does)
+2. [Running it locally](#running-it-locally)
+3. [The screens](#the-screens)
+4. [How the scoring works](#how-the-scoring-works)
+5. [Confidence and safety design](#confidence-and-safety-design)
+6. [Waiting-room monitoring and surge](#waiting-room-monitoring-and-surge)
+7. [Configuration](#configuration)
+8. [Project structure](#project-structure)
+9. [Tech stack](#tech-stack)
+10. [Limitations](#limitations)
+
+---
+
+## What it does
+
+At patient arrival, a nurse enters the vitals and a few observations. The system
+returns a recommended acuity level, the plain-language reasons behind it, and a
+confidence indicator. The nurse reviews it and either accepts it or overrides it
+with a reason. Every action is logged.
+
+Beyond the first decision, the system tracks how long each waiting patient has
+gone without a re-check against a safe-wait policy, and flags anyone who is due.
+Re-checking a patient re-runs the same scoring engine on fresh observations.
+
+Core capabilities:
+
+- Acuity scoring across ESI Levels 1 to 5, calibrated by age band.
+- A two-layer engine: deterministic red-flag rules, then a weighted score.
+- Explicit confidence on every recommendation.
+- A bias toward escalation when the system is uncertain.
+- Waiting-room monitoring with safe-wait thresholds.
+- A surge mode that changes department behaviour under load.
+- Clinician override capture and a full audit log.
+
+---
+
+## Running it locally
+
+You need [Node.js](https://nodejs.org) version 18 or newer.
 
 ```bash
-# 1. go into the project folder
-cd triage-app
-
-# 2. install the dependencies (only needed the first time, ~30 seconds)
-npm install
-
-# 3. start the app
-npm run dev
+npm install     # first time only, installs dependencies
+npm run dev     # starts the dev server
 ```
 
-After step 3, the terminal prints a local address, usually:
+The terminal automatically opens the app in the browser on a local address. If not, then the terminal prints a local address, usually `http://localhost:5173/`. Open it
+in a browser.
 
+Other commands:
+
+```bash
+npm run build     # produce a production build in dist/
+npm run preview   # serve the production build locally
 ```
-  ➜  Local:   http://localhost:5173/
-```
 
-Open that link in your browser (it may open automatically). The app is running.
-
-To stop it, press `Ctrl + C` in the terminal.
+A simulated department clock runs while the app is open (one department minute
+every few seconds), so recheck timers and wait times advance during use.
 
 ---
 
-## How to demo it (walk the judges through this)
+## The screens
 
-**Tab 1 — Triage**
-1. Use the "Load a sample patient" dropdown to pick a case.
-2. Press **Assess patient**. The recommendation appears on the right.
-3. Try these specific cases to show the key features:
-   - **P01 (chest pain)** → rule layer fires instantly, Level 1, red banner.
-   - **P04 (3-year-old, fever)** → Level 4, calm. Point out an adult-calibrated
-     model would WRONGLY escalate this child on HR 138 / BP 100. This is the
-     age-banding safety point.
-   - **P07 or P17 (ambiguous)** → **Low confidence**, with the reason shown.
-   - **P08 (first-time, missing BP)** → **Low confidence** (no history + missing vital).
-   - **P20 (geriatric, ambiguous)** → watch it **escalate one level** for safety
-     (low confidence near a boundary) — the driver list says so explicitly.
-4. Press **Accept & route** or **Override** on any case. Override lets you pick a
-   different level + a preset reason.
+The app has three tabs.
 
-**Tab 2 — Waiting Room**
-- Press **Simulate surge (3×)** to load 3× volume (60 patients). Watch them
-  auto-sort by acuity, and rows turn amber/red as they pass their safe-wait time.
-- Click a "Recheck due" or "RE-ASSESS NOW" flag to simulate re-assessment — new
-  (worsened) vitals re-run the same two-layer engine and the row updates.
+### Board
 
-**Tab 3 — Audit Log**
-- Every accept, override, and re-assessment is recorded with timestamp, what the
-  AI recommended, its confidence and drivers, and what the clinician chose.
+The live waiting room and the home screen. It has three lanes:
+
+- **Not yet triaged** — patients who have arrived; their door-to-triage clock is
+  running. Click one to triage them.
+- **Waiting** — triaged patients being monitored. Rows show acuity, confidence,
+  time waited, and recheck status. A row turns amber when it passes the safe wait
+  for its level, and red when well overdue.
+- **In treatment** — patients moved off the waiting clock.
+
+The board also holds the surge control and a safety counter-metric panel
+(escalation rate and override rate across the shift).
+
+### Triage
+
+A two-panel screen for assessing one patient.
+
+- **Left (intake):** a patient header, the vitals block, and the observed block.
+  Vitals are heart rate, SpO2, systolic BP, temperature, and a manually counted
+  respiratory rate. On-oxygen status is a toggle inside the SpO2 tile. Observed
+  inputs are the presenting complaint, consciousness (ACVPU), general appearance,
+  and pain score.
+- **Right (recommendation):** appears once the nurse confirms the vitals. It
+  shows the recommended acuity level, which layer produced it, the scoring
+  drivers with their weights, and a confidence indicator. Below it is the nurse's
+  own acuity field with an inline override (pick a level, then a reason). After
+  the first confirmation the recommendation updates live as observations change.
+
+Confirmation is blocked until the minimum vitals are present (heart rate, SpO2,
+respiratory rate, and consciousness).
+
+### Audit Log
+
+A role-restricted record of every decision this shift: what the system
+recommended, its confidence and drivers, what the clinician committed, and any
+override reason, each with a timestamp.
 
 ---
 
-## How it maps to the brief's Minimum Prototype Expectations
+## How the scoring works
 
-| Requirement | Where |
-|---|---|
-| 15–20 simulated patients | 20 in `src/data/patients.js` |
-| Ambiguous presentation | P07, P17, P20 |
-| Pediatric / geriatric case | P04, P05 (pediatric); P03, P06, P15, P18, P20 (geriatric) |
-| Zero-history patient | P02, P08, P15, P19 |
-| 3× surge behaviour | "Simulate surge" button in Waiting Room |
-| Confidence on every score | Shown on every recommendation; never hidden |
-| Clinician override + logging | Override button + Audit Log tab |
+Every patient passes through two layers behind a single interface: patient in,
+`{ acuity, drivers, confidence, safety }` out.
+
+### Layer 1: red-flag rules (deterministic)
+
+A fixed list of hard danger signs, checked first. If any fires, the patient is
+escalated immediately and the scoring layer is skipped. This layer never depends
+on a confidence value, so the most dangerous cases cannot be softened by a low
+score. Examples: critical hypoxia (SpO2 at or below the critical threshold), any
+consciousness state other than Alert, age-banded extreme heart or respiratory
+rate, hypotension, a hard-stop fever, and red-flag complaints such as chest pain
+or stroke symptoms. Every fired rule names itself.
+
+### Layer 2: weighted score
+
+For patients who pass Layer 1, each vital is given a sub-score of 0 to 3 based on
+how far it sits from normal **for the patient's age band**. Adult sub-scores
+follow the NEWS2 (National Early Warning Score 2) chart; paediatric bands use
+simplified, illustrative ranges because children run higher normal heart and
+respiratory rates. The sub-scores are summed into an aggregate, which maps to an
+acuity level. Each contributing vital is shown as a driver with the points it
+added, so the recommendation is explainable by construction.
+
+Age banding is the key safety feature here: applying a single adult-calibrated
+model to a child would misread a normal toddler heart rate as dangerous. The
+bands prevent that.
+
+---
+
+## Confidence and safety design
+
+Confidence is computed separately from the acuity level. It falls when there is
+less to go on: a first-time patient with no history, missing vitals, an ambiguous
+presentation (see `src/engine/ambiguity.js`), or a score sitting near the
+boundary between two levels.
+
+Two safety behaviours follow from this:
+
+- **Bias to escalation.** When confidence is low and the score is near a
+  boundary, the system rounds toward the more urgent level, not the safer one.
+  Under-triage (missing a sick patient) is treated as worse than over-triage.
+- **Clinical ceilings.** Severe pain and a sick general appearance each cap the
+  acuity at a more urgent level regardless of vitals, following ESI decision
+  logic.
+
+Because the system is deliberately biased toward escalation, the Board shows a
+counter-metric (escalation rate and override rate) so over-escalation can be
+watched rather than assumed away.
+
+---
+
+## Waiting-room monitoring and surge
+
+Each triaged patient has a safe-wait time based on their acuity level (more
+urgent patients have shorter safe waits). The system tracks time since the last
+check and flags patients who are due or overdue. Re-checking a patient records
+an outcome (improved, no change, worse) and re-runs both engine layers on the
+updated observations, which can raise the acuity.
+
+Surge mode represents a state the whole department is in, not a data load. It can
+be entered manually with the toggle in the status bar, or triggered by simulating
+a rush of arrivals from the Board. In surge, recheck intervals tighten and
+routine low-acuity alerts are suppressed (and every suppression is logged). The
+patient queue is never cleared by entering or leaving surge.
+
+---
+
+## Configuration
+
+Everything that would vary by hospital lives in `src/config/site.js`: the
+hospital name and jurisdiction, the safe-wait policy per acuity level, the surge
+enter/exit thresholds and behaviour, the safety ceilings, the geriatric
+weighting, and the quick-complaint terms. Adapting the app to a different
+hospital is a configuration change, not a code change.
 
 ---
 
 ## Project structure
 
 ```
-triage-app/
-├── index.html
-├── package.json
-├── vite.config.js
-├── README.md
-└── src/
-    ├── main.jsx              app entry
-    ├── App.jsx              main component: tabs, state, surge, override, log
-    ├── styles.css           Round 1 theme (purple/pink/teal)
-    ├── engine/
-    │   ├── thresholds.js    age-banded NEWS2-based vital thresholds
-    │   ├── redFlags.js      LAYER 1: deterministic hard danger signs
-    │   └── triageEngine.js  LAYER 2: weighted scoring + confidence + escalation
-    ├── data/
-    │   └── patients.js      20 synthetic patients (all required case types)
-    └── components/
-        ├── IntakeForm.jsx
-        ├── RecommendationCard.jsx
-        ├── OverrideModal.jsx
-        ├── QueueView.jsx
-        ├── AuditLog.jsx
-        └── ui.js            shared acuity labels + safe-wait thresholds
+src/
+  main.jsx                 entry point
+  App.jsx                  shell, routing, clock, triage flow
+  styles.css               design system and all styling
+
+  engine/
+    triageEngine.js        the two-layer scoring pipeline
+    redFlags.js            Layer 1 deterministic rules
+    thresholds.js          age bands, NEWS2 sub-scores, danger zones
+    ambiguity.js           derives presentation ambiguity for confidence
+
+  lib/
+    store.js               reducer holding all state, plus selectors/helpers
+    format.js              time, age, and label display helpers
+
+  config/
+    site.js                per-hospital configuration
+
+  data/
+    patients.js            synthetic patient scenarios
+    deviceFeed.js          simulated monitor feed for vitals
+
+  components/
+    StatusBar.jsx          persistent top strip with the mode toggle
+    BoardView.jsx          live board, surge control, counter-metric
+    IntakeForm.jsx         triage capture (left panel)
+    VitalsBlock.jsx        vital entry and confirmation
+    ObservedBlock.jsx      complaint, consciousness, appearance, pain
+    RecommendationCard.jsx recommendation plus the nurse's decision
+    PatientView.jsx        single-patient detail and timeline
+    PatientHeader.jsx      identity band
+    AuditLogView.jsx       audit log screen
+    AuditLog.jsx           the audit entry list
+    ConfidenceMeter.jsx    reusable confidence indicator
+    ui.js                  shared acuity/confidence/layer labels
 ```
 
 The engine (`src/engine/`) is plain JavaScript with no UI dependencies. It runs
-in the browser — no backend server needed for the demo. In production, the same
-engine sits behind a hospital API and the scoring layer is replaced by a model
-trained on real ED data (e.g. MIMIC-IV-ED); nothing else changes.
+in the browser; there is no backend server. In a production system, the same
+engine would sit behind a hospital API and the scoring layer could be replaced by
+a model trained on real ED data without changing the rest of the system.
 
 ---
 
-## Optional: put it online for the pitch
+## Tech stack
 
-To share a live link instead of running locally:
-
-```bash
-npm run build
-```
-
-This creates a `dist/` folder. Drag that folder onto https://app.netlify.com/drop
-(free, no account needed) and you get a public URL in seconds.
+- **React 18** with **Vite** for the build and dev server.
+- Plain JavaScript for the engine and state (a `useReducer`-based store).
+- No backend, no database, no external services. State lives in memory for the
+  session.
 
 ---
 
-## Important honesty notes (for Q&A)
+## Limitations
 
-- The scoring layer is a transparent proof-of-concept stand-in for a model that
-  would be trained on real ED data in production. Its thresholds are illustrative
-  (based on NEWS2 for adults, simplified pediatric bands) and would require
-  clinical validation before real use.
-- Patients are hand-crafted synthetic records, not real data.
-- This is decision support with a human always in the loop — not a cleared
-  medical device.
+- This is a proof-of-concept on **synthetic data**, not real patients.
+- The scoring layer is a transparent, rules-and-weights stand-in. Adult
+  thresholds follow NEWS2; paediatric bands are simplified and illustrative and
+  would need clinical validation before any real use.
+- There is no persistence: refreshing the page resets all state.
+- It is **not a medical device** and must not be used for clinical decisions.

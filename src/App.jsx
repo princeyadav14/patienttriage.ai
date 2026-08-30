@@ -1,206 +1,245 @@
-import React, { useState, useEffect } from "react";
+// App - application shell and routing.
+// Holds top-level state via useReducer (see lib/store.js), runs a simulated
+// department clock (one minute per few seconds) so timers advance during use,
+// and renders the three tabs: Board, Triage, and Audit Log. Triage flow:
+// select or start a patient, confirm vitals, then commit an acuity decision.
+import React, { useEffect, useMemo, useReducer, useState } from "react";
+
 import { triage } from "./engine/triageEngine";
-import { patients as samplePatients } from "./data/patients";
+import { patients as SAMPLE } from "./data/patients";
+import { reducer, initialState, selectStats } from "./lib/store";
+
+import StatusBar from "./components/StatusBar";
 import IntakeForm from "./components/IntakeForm";
 import RecommendationCard from "./components/RecommendationCard";
-import OverrideModal from "./components/OverrideModal";
-import QueueView from "./components/QueueView";
-import AuditLog from "./components/AuditLog";
+import BoardView from "./components/BoardView";
+import PatientView from "./components/PatientView";
+import AuditLogView from "./components/AuditLogView";
+
+const TICK_MS = 3000;
+
+// Minimum data required before a nurse can confirm and see a recommendation.
+// The NEWS2 backbone: heart rate, SpO2, respiratory rate, and a consciousness
+// level. BP and temperature may be missing (the engine handles that through
+// lower confidence). This stops "confirm" working on an empty form.
+function hasMinimumVitals(draft) {
+  const v = (draft && draft.vitals) || {};
+  const hasNum = (x) => x != null && x !== "";
+  return hasNum(v.heartRate) && hasNum(v.spo2) && hasNum(v.respRate) && !!v.consciousness;
+}
+
+const BLANK_PATIENT = {
+  id: null,
+  mrn: null,
+  name: "",
+  age: "",
+  sex: "F",
+  complaint: "",
+  pain: null,
+  history: "first-time",
+  appearance: null,
+  arrivalMode: "walk-in",
+  comorbidities: [],
+  nurseUnsure: false,
+  vitals: {
+    respRate: null, spo2: null, sbp: null,
+    heartRate: null, temp: null,
+    consciousness: "alert", onOxygen: false,
+  },
+};
 
 export default function App() {
-  const [tab, setTab] = useState("triage"); // triage | queue | log
-  const [currentPatient, setCurrentPatient] = useState(null);
-  const [result, setResult] = useState(null);
-  const [showOverride, setShowOverride] = useState(false);
+  const [state, dispatch] = useReducer(reducer, undefined, initialState);
+  const [vitalsConfirmed, setVitalsConfirmed] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
-  const [queue, setQueue] = useState([]); // { result, waitMins }
-    const [tick, setTick] = useState(0);
+  // --- the department clock ------------------------------------------------
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 10000); // refresh every 10s
-    return () => clearInterval(id);
+    const t = setInterval(() => dispatch({ type: "TICK" }), TICK_MS);
+    return () => clearInterval(t);
   }, []);
-  const [log, setLog] = useState([]);
-  const [surge, setSurge] = useState(false);
 
-    function now() {
-    return new Date().toLocaleString([], {
-      weekday: "short",
-      day: "2-digit",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
+  const stats = useMemo(() => selectStats(state), [state]);
 
-  function handleAssess(patient) {
-    const r = triage(patient);
-    setCurrentPatient(patient);
-    setResult(r);
-  }
-
-    function addToQueue(r) {
-    setQueue((q) => {
-      if (q.some((x) => x.result.patientId === r.patientId)) return q;
-      return [...q, { result: r, arrivedAt: Date.now() }];
-    });
-  }
-
-  function handleAccept() {
-    if (!result) return;
-    setLog((l) => [
-      {
-        action: "accept",
-        time: now(),
-        patientId: result.patientId,
-        name: result.name,
-        recommended: result.acuity,
-        chosen: result.acuity,
-        confidence: result.confidence.level,
-        drivers: result.drivers,
-      },
-      ...l,
-    ]);
-    addToQueue(result, 0);
-    setResult(null);
-    setCurrentPatient(null);
-  }
-
-  function handleOverrideConfirm(level, reason) {
-    const overridden = { ...result, acuity: level, overridden: true };
-    setLog((l) => [
-      {
-        action: "override",
-        time: now(),
-        patientId: result.patientId,
-        name: result.name,
-        recommended: result.acuity,
-        chosen: level,
-        reason,
-        confidence: result.confidence.level,
-        drivers: result.drivers,
-      },
-      ...l,
-    ]);
-    addToQueue(overridden, 0);
-    setShowOverride(false);
-    setResult(null);
-    setCurrentPatient(null);
-  }
-
-  // Surge: load 3x volume by triaging all sample patients (x3 with staggered waits)
-  function toggleSurge() {
-    if (surge) {
-      setSurge(false);
-      setQueue([]);
-      return;
-    }
-    setSurge(true);
-    const surgeQueue = [];
-    for (let copy = 0; copy < 3; copy++) {
-      for (const p of samplePatients) {
-        const r = triage(p);
-        // give a distinct id per copy so the queue is 3x
-                const cloned = { ...r, patientId: `${r.patientId}-${copy + 1}` };
-        // stagger arrival times into the past so wait times vary and climb
-        const minsAgo = Math.floor(Math.random() * 90);
-        surgeQueue.push({ result: cloned, arrivedAt: Date.now() - minsAgo * 60000 });
-      }
-    }
-    setQueue(surgeQueue);
-    setTab("queue");
-  }
-
-  // Simulate re-assessment: worsen vitals slightly and re-run engine
-  function handleReassess(item) {
-    // find the base sample patient to re-run with worsened vitals
-    const baseId = item.result.patientId.split("-")[0];
-    const base = samplePatients.find((p) => p.id === baseId);
-    if (!base) {
-      // just reset the wait
-      setQueue((q) =>
-        q.map((x) => (x.result.patientId === item.result.patientId ? { ...x, waitMins: 0 } : x))
-      );
-      return;
-    }
-    // worsen: drop SpO2, raise HR/RR to simulate deterioration
-    const worse = JSON.parse(JSON.stringify(base));
-    if (worse.vitals.spo2 != null) worse.vitals.spo2 = Math.max(85, worse.vitals.spo2 - 5);
-    if (worse.vitals.heartRate != null) worse.vitals.heartRate += 15;
-    if (worse.vitals.respRate != null) worse.vitals.respRate += 4;
-    const r = triage(worse);
-    const updated = { ...r, patientId: item.result.patientId };
-    setQueue((q) =>
-      q.map((x) => (x.result.patientId === item.result.patientId ? { result: updated, waitMins: 0 } : x))
+  // --- live assessment -----------------------------------------------------
+  // The recommendation is recomputed on every keystroke and every tap, so the
+  // was pressed.
+  const liveResult = useMemo(() => {
+    const d = state.activeDraft;
+    if (!d) return null;
+    const hasSomething =
+      d.complaint?.trim() ||
+      Object.entries(d.vitals || {}).some(([k, v]) => k !== "consciousness" && k !== "onOxygen" && v != null);
+    if (!hasSomething) return null;
+    return triage(
+      { ...d, age: d.age === "" || d.age == null ? 30 : Number(d.age) },
+      { vitalsAgeMinutes: state.clockMin - (d._capturedAtMin ?? state.clockMin) }
     );
-    setLog((l) => [
-      {
-        action: "accept",
-        time: now(),
-        patientId: item.result.patientId,
-        name: item.result.name,
-        recommended: updated.acuity,
-        chosen: updated.acuity,
-        confidence: updated.confidence.level,
-        drivers: ["RE-ASSESSMENT: new vitals entered", ...updated.drivers.slice(0, 2)],
-      },
-      ...l,
-    ]);
+  }, [state.activeDraft, state.clockMin]);
+
+  const focused = state.queue.find((q) => q.key === state.focusPatient) || null;
+
+  // --- handlers ------------------------------------------------------------
+  function startBlank() {
+    setVitalsConfirmed(false); setRevealed(false);
+    dispatch({
+      type: "START_TRIAGE",
+      draft: { ...BLANK_PATIENT, id: `NEW-${state.clockMin}`, _capturedAtMin: state.clockMin, arrivedAtMin: state.clockMin },
+    });
   }
+
+  function startFromArrival(arrival) {
+    setVitalsConfirmed(false); setRevealed(false);
+    dispatch({
+      type: "START_TRIAGE",
+      arrivalId: arrival.id,
+      draft: {
+        ...BLANK_PATIENT,
+        id: arrival.id,
+        mrn: arrival.mrn,
+        name: arrival.name,
+        age: arrival.age,
+        sex: arrival.sex,
+        arrivalMode: arrival.arrivalMode,
+        history: arrival.mrn ? "known" : "first-time",
+        arrivedAtMin: arrival.arrivedAtMin,
+        _capturedAtMin: state.clockMin,
+      },
+    });
+  }
+
+  function loadSample(id) {
+    const s = SAMPLE.find((p) => p.id === id);
+    if (!s) return;
+    setVitalsConfirmed(false); setRevealed(false);
+    dispatch({
+      type: "UPDATE_DRAFT",
+      patch: {
+        ...JSON.parse(JSON.stringify(s)),
+        arrivedAtMin: Math.max(0, state.clockMin - (s.arrivedAt ?? 5)),
+        _capturedAtMin: state.clockMin,
+        nurseUnsure: false,
+      },
+    });
+  }
+
+  function commit({ clinicianAcuity, reason, note, unsure }) {
+    const d = state.activeDraft;
+    const record = {
+      ...d,
+      age: d.age === "" || d.age == null ? 30 : Number(d.age),
+      name: d.name?.trim() || "Unidentified patient",
+      nurseUnsure: !!unsure,
+    };
+    dispatch({
+      type: "COMMIT",
+      record,
+      result: triage(record),
+      clinicianAcuity,
+      reason,
+      note,
+      unsure,
+    });
+    setVitalsConfirmed(false); setRevealed(false);
+  }
+
+  const tabs = [
+    { key: "board", label: "Board", count: stats.waiting + stats.awaitingTriage },
+    { key: "triage", label: "Triage", count: state.activeDraft ? 1 : 0 },
+    { key: "governance", label: "Audit Log", count: state.log.length, locked: true },
+  ];
 
   return (
     <div className="app">
-      <div className="header">
-        <div className="brand">
-          <div className="brand-mark">+</div>
-          <div>
-            <div className="brand-name">PatientTriage.ai</div>
-            <div className="brand-sub">It speaks when it matters.</div>
-          </div>
-        </div>
-        <div className="tabs">
-          <button className={`tab ${tab === "triage" ? "active" : ""}`} onClick={() => setTab("triage")}>
-            Triage
-          </button>
-          <button className={`tab ${tab === "queue" ? "active" : ""}`} onClick={() => setTab("queue")}>
-            Waiting Room {queue.length > 0 && `(${queue.length})`}
-          </button>
-          <button className={`tab ${tab === "log" ? "active" : ""}`} onClick={() => setTab("log")}>
-            Audit Log {log.length > 0 && `(${log.length})`}
-          </button>
-        </div>
-      </div>
+      <StatusBar
+        stats={stats}
+        mode={state.mode}
+        clockMin={state.clockMin}
+        onToggleSurge={() => dispatch({ type: "SET_SURGE", on: state.mode !== "surge" })}
+      />
 
-      <div className="container">
-        {tab === "triage" && (
-          <div className="grid-2">
-            <IntakeForm onAssess={handleAssess} />
-            <RecommendationCard
-              result={result}
-              onAccept={handleAccept}
-              onOverride={() => setShowOverride(true)}
-            />
-          </div>
-        )}
+      <nav className="tabs">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${state.tab === t.key ? "active" : ""} ${t.locked ? "locked" : ""}`}
+            onClick={() => dispatch({ type: "SET_TAB", tab: t.key })}
+            title={t.locked ? "Charge nurse / quality lead" : undefined}
+          >
+            {t.label}
+            {t.count > 0 && <span className="count">{t.count}</span>}
+          </button>
+        ))}
+        <span style={{ flex: 1 }} />
+        <button className="btn btn-sm btn-primary" style={{ margin: "0 0 0 8px" }} onClick={startBlank}>
+          + New triage
+        </button>
+      </nav>
 
-        {tab === "queue" && (
-          <QueueView
-            queue={queue}
-            surge={surge}
-            onSurgeToggle={toggleSurge}
-            onReassess={handleReassess}
+      <main className="container">
+        {state.tab === "board" && (
+          <BoardView
+            queue={state.queue}
+            arrivals={state.arrivals}
+            clockMin={state.clockMin}
+            mode={state.mode}
+            stats={{ ...stats, surgeSince: state.surgeEnteredAtMin }}
+            onTriageArrival={startFromArrival}
+            onReassess={(key, outcome) => dispatch({ type: "REASSESS", key, outcome })}
+            onFocus={(key) => dispatch({ type: "FOCUS_PATIENT", key })}
+            onTreat={(key) => dispatch({ type: "MOVE_TO_TREATMENT", key })}
+            onSimulateSurge={() => dispatch({ type: "SIMULATE_SURGE" })}
           />
         )}
 
-        {tab === "log" && <AuditLog log={log} />}
-      </div>
+        {state.tab === "triage" && (
+          state.activeDraft ? (
+            <div className="split">
+              <IntakeForm
+                draft={state.activeDraft}
+                clockMin={state.clockMin}
+                vitalsConfirmed={vitalsConfirmed}
+                canConfirm={hasMinimumVitals(state.activeDraft)}
+                onPatch={(patch) => dispatch({ type: "UPDATE_DRAFT", patch })}
+                onLoadSample={loadSample}
+                onConfirmVitals={() => { setVitalsConfirmed(true); setRevealed(true); }}
+                onCancel={() => dispatch({ type: "CANCEL_TRIAGE" })}
+              />
+              <RecommendationCard
+                result={revealed ? liveResult : null}
+                awaitingConfirm={!revealed}
+                patient={state.activeDraft}
+                onCommit={commit}
+                onToggleUnsure={() =>
+                  dispatch({ type: "UPDATE_DRAFT", patch: { nurseUnsure: !state.activeDraft.nurseUnsure } })
+                }
+              />
+            </div>
+          ) : (
+            <div className="panel">
+              <div className="panel-head"><span className="panel-title">Triage</span></div>
+              <div className="empty">
+                No patient selected.
+                <div style={{ marginTop: 14 }}>
+                  <button className="btn btn-primary" onClick={startBlank}>Start a new triage</button>
+                </div>
+              </div>
+            </div>
+          )
+        )}
 
-      {showOverride && result && (
-        <OverrideModal
-          result={result}
-          onConfirm={handleOverrideConfirm}
-          onCancel={() => setShowOverride(false)}
-        />
-      )}
+        {state.tab === "patient" && (
+          <PatientView
+            item={focused}
+            clockMin={state.clockMin}
+            mode={state.mode}
+            onReassess={(key, outcome) => dispatch({ type: "REASSESS", key, outcome })}
+            onBack={() => dispatch({ type: "SET_TAB", tab: "board" })}
+          />
+        )}
+
+        {state.tab === "governance" && <AuditLogView log={state.log} />}
+      </main>
     </div>
   );
 }
